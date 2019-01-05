@@ -47,7 +47,7 @@ import (
 )
 
 func main() {
-	rand.Seed(time.Now().UTC().UnixNano())
+	rand.Seed(time.Now().UnixNano())
 
 	hyperkubeCommand, allCommandFns := NewHyperKubeCommand(server.SetupSignalHandler())
 
@@ -85,7 +85,7 @@ func commandFor(basename string, defaultCommand *cobra.Command, commands []func(
 
 // NewHyperKubeCommand is the entry point for hyperkube
 func NewHyperKubeCommand(stopCh <-chan struct{}) (*cobra.Command, []func() *cobra.Command) {
-	// these have to be functions since the command is polymorphic.  Cobra wants you to be  top level
+	// these have to be functions since the command is polymorphic. Cobra wants you to be top level
 	// command to get executed
 	apiserver := func() *cobra.Command {
 		ret := kubeapiserver.NewAPIServerCommand(stopCh)

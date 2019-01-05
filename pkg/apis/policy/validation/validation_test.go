@@ -242,6 +242,9 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 				RunAsUser: policy.RunAsUserStrategyOptions{
 					Rule: policy.RunAsUserStrategyRunAsAny,
 				},
+				RunAsGroup: &policy.RunAsGroupStrategyOptions{
+					Rule: policy.RunAsGroupStrategyRunAsAny,
+				},
 				FSGroup: policy.FSGroupStrategyOptions{
 					Rule: policy.FSGroupStrategyRunAsAny,
 				},
@@ -259,11 +262,17 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 	noUserOptions := validPSP()
 	noUserOptions.Spec.RunAsUser.Rule = ""
 
+	noGroupOptions := validPSP()
+	noGroupOptions.Spec.RunAsGroup.Rule = ""
+
 	noSELinuxOptions := validPSP()
 	noSELinuxOptions.Spec.SELinux.Rule = ""
 
 	invalidUserStratType := validPSP()
 	invalidUserStratType.Spec.RunAsUser.Rule = "invalid"
+
+	invalidGroupStratType := validPSP()
+	invalidGroupStratType.Spec.RunAsGroup.Rule = "invalid"
 
 	invalidSELinuxStratType := validPSP()
 	invalidSELinuxStratType.Spec.SELinux.Rule = "invalid"
@@ -271,6 +280,10 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 	invalidUIDPSP := validPSP()
 	invalidUIDPSP.Spec.RunAsUser.Rule = policy.RunAsUserStrategyMustRunAs
 	invalidUIDPSP.Spec.RunAsUser.Ranges = []policy.IDRange{{Min: -1, Max: 1}}
+
+	invalidGIDPSP := validPSP()
+	invalidGIDPSP.Spec.RunAsGroup.Rule = policy.RunAsGroupStrategyMustRunAs
+	invalidGIDPSP.Spec.RunAsGroup.Ranges = []policy.IDRange{{Min: -1, Max: 1}}
 
 	missingObjectMetaName := validPSP()
 	missingObjectMetaName.ObjectMeta.Name = ""
@@ -371,6 +384,9 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 	nonEmptyFlexVolumes := validPSP()
 	nonEmptyFlexVolumes.Spec.AllowedFlexVolumes = []policy.AllowedFlexVolume{{Driver: "example/driver"}}
 
+	invalidProcMount := validPSP()
+	invalidProcMount.Spec.AllowedProcMountTypes = []api.ProcMountType{api.ProcMountType("bogus")}
+
 	type testCase struct {
 		psp         *policy.PodSecurityPolicy
 		errorType   field.ErrorType
@@ -382,6 +398,11 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 			errorType:   field.ErrorTypeNotSupported,
 			errorDetail: `supported values: "MustRunAs", "MustRunAsNonRoot", "RunAsAny"`,
 		},
+		"no group options": {
+			psp:         noGroupOptions,
+			errorType:   field.ErrorTypeNotSupported,
+			errorDetail: `supported values: "MustRunAs", "RunAsAny", "MayRunAs"`,
+		},
 		"no selinux options": {
 			psp:         noSELinuxOptions,
 			errorType:   field.ErrorTypeNotSupported,
@@ -390,17 +411,22 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 		"no fsgroup options": {
 			psp:         noFSGroupOptions,
 			errorType:   field.ErrorTypeNotSupported,
-			errorDetail: `supported values: "MustRunAs", "RunAsAny"`,
+			errorDetail: `supported values: "MayRunAs", "MustRunAs", "RunAsAny"`,
 		},
 		"no sup group options": {
 			psp:         noSupplementalGroupsOptions,
 			errorType:   field.ErrorTypeNotSupported,
-			errorDetail: `supported values: "MustRunAs", "RunAsAny"`,
+			errorDetail: `supported values: "MayRunAs", "MustRunAs", "RunAsAny"`,
 		},
 		"invalid user strategy type": {
 			psp:         invalidUserStratType,
 			errorType:   field.ErrorTypeNotSupported,
 			errorDetail: `supported values: "MustRunAs", "MustRunAsNonRoot", "RunAsAny"`,
+		},
+		"invalid group strategy type": {
+			psp:         invalidGroupStratType,
+			errorType:   field.ErrorTypeNotSupported,
+			errorDetail: `supported values: "MustRunAs", "RunAsAny", "MayRunAs"`,
 		},
 		"invalid selinux strategy type": {
 			psp:         invalidSELinuxStratType,
@@ -410,15 +436,20 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 		"invalid sup group strategy type": {
 			psp:         invalidSupGroupStratType,
 			errorType:   field.ErrorTypeNotSupported,
-			errorDetail: `supported values: "MustRunAs", "RunAsAny"`,
+			errorDetail: `supported values: "MayRunAs", "MustRunAs", "RunAsAny"`,
 		},
 		"invalid fs group strategy type": {
 			psp:         invalidFSGroupStratType,
 			errorType:   field.ErrorTypeNotSupported,
-			errorDetail: `supported values: "MustRunAs", "RunAsAny"`,
+			errorDetail: `supported values: "MayRunAs", "MustRunAs", "RunAsAny"`,
 		},
 		"invalid uid": {
 			psp:         invalidUIDPSP,
+			errorType:   field.ErrorTypeInvalid,
+			errorDetail: "min cannot be negative",
+		},
+		"invalid gid": {
+			psp:         invalidGIDPSP,
 			errorType:   field.ErrorTypeInvalid,
 			errorDetail: "min cannot be negative",
 		},
@@ -522,6 +553,11 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 			errorType:   field.ErrorTypeRequired,
 			errorDetail: "must specify a driver",
 		},
+		"invalid allowedProcMountTypes": {
+			psp:         invalidProcMount,
+			errorType:   field.ErrorTypeNotSupported,
+			errorDetail: `supported values: "Default", "Unmasked"`,
+		},
 	}
 
 	for k, v := range errorCases {
@@ -615,6 +651,10 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 	flexvolumeWhenAllVolumesAllowed.Spec.AllowedFlexVolumes = []policy.AllowedFlexVolume{
 		{Driver: "example/driver2"},
 	}
+
+	validProcMount := validPSP()
+	validProcMount.Spec.AllowedProcMountTypes = []api.ProcMountType{api.DefaultProcMount, api.UnmaskedProcMount}
+
 	successCases := map[string]struct {
 		psp *policy.PodSecurityPolicy
 	}{
@@ -654,6 +694,9 @@ func TestValidatePodSecurityPolicy(t *testing.T) {
 		"allow white-listed flexVolume when all volumes are allowed": {
 			psp: flexvolumeWhenAllVolumesAllowed,
 		},
+		"valid allowedProcMountTypes": {
+			psp: validProcMount,
+		},
 	}
 
 	for k, v := range successCases {
@@ -679,6 +722,9 @@ func TestValidatePSPVolumes(t *testing.T) {
 				},
 				RunAsUser: policy.RunAsUserStrategyOptions{
 					Rule: policy.RunAsUserStrategyRunAsAny,
+				},
+				RunAsGroup: &policy.RunAsGroupStrategyOptions{
+					Rule: policy.RunAsGroupStrategyRunAsAny,
 				},
 				FSGroup: policy.FSGroupStrategyOptions{
 					Rule: policy.FSGroupStrategyRunAsAny,

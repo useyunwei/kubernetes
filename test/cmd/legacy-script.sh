@@ -473,6 +473,7 @@ runTests() {
   # Kubectl diff #
   ################
   record_command run_kubectl_diff_tests
+  record_command run_kubectl_diff_same_names
 
   ###############
   # Kubectl get #
@@ -574,6 +575,7 @@ runTests() {
 
   if kube::test::if_supports_resource "${job}" ; then
     record_command run_job_tests
+    record_command run_create_job_tests
   fi
 
   #################
@@ -721,7 +723,7 @@ runTests() {
 
     output_message=$(kubectl auth can-i list jobs.batch/bar -n foo --quiet 2>&1 "${kube_flags[@]}")
     kube::test::if_empty_string "${output_message}"
-    
+
     output_message=$(kubectl auth can-i get pods --subresource=log 2>&1 "${kube_flags[@]}"; echo $?)
     kube::test::if_has_string "${output_message}" '0'
 

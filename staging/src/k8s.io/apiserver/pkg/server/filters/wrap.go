@@ -18,23 +18,39 @@ package filters
 
 import (
 	"net/http"
-	"runtime/debug"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apiserver/pkg/server/httplog"
 )
 
+func badHTTPResponse() httplog.StacktracePred {
+	return func(status int) bool {
+		// http status code should not be zero
+		if status == 0 {
+			klog.Errorf("Bad HTTP Response - status is zero")
+			return true
+		}
+		return false
+	}
+}
+
 // WithPanicRecovery wraps an http Handler to recover and log panics.
 func WithPanicRecovery(handler http.Handler) http.Handler {
+	return withPanicRecovery(handler, func(w http.ResponseWriter, req *http.Request, err interface{}) {
+		http.Error(w, "This request caused apiserver to panic. Look in the logs for details.", http.StatusInternalServerError)
+		klog.Errorf("apiserver panic'd on %v %v", req.Method, req.RequestURI)
+	})
+}
+
+func withPanicRecovery(handler http.Handler, crashHandler func(http.ResponseWriter, *http.Request, interface{})) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		defer runtime.HandleCrash(func(err interface{}) {
-			http.Error(w, "This request caused apiserver to panic. Look in the logs for details.", http.StatusInternalServerError)
-			glog.Errorf("apiserver panic'd on %v %v: %v\n%s\n", req.Method, req.RequestURI, err, debug.Stack())
+			crashHandler(w, req, err)
 		})
 
-		logger := httplog.NewLogged(req, &w)
+		logger := httplog.NewLogged(req, &w).StacktraceWhen(badHTTPResponse())
 		defer logger.Log()
 
 		// Dispatch to the internal handler

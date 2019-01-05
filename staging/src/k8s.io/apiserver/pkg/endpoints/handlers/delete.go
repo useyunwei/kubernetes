@@ -31,7 +31,10 @@ import (
 	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/endpoints/handlers/negotiation"
 	"k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/features"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/apiserver/pkg/util/dryrun"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	utiltrace "k8s.io/apiserver/pkg/util/trace"
 )
 
@@ -43,8 +46,8 @@ func DeleteResource(r rest.GracefulDeleter, allowsOptions bool, scope RequestSco
 		trace := utiltrace.New("Delete " + req.URL.Path)
 		defer trace.LogIfLong(500 * time.Millisecond)
 
-		if isDryRun(req.URL) {
-			scope.err(errors.NewBadRequest("dryRun is not supported yet"), w, req)
+		if isDryRun(req.URL) && !utilfeature.DefaultFeatureGate.Enabled(features.DryRun) {
+			scope.err(errors.NewBadRequest("the dryRun alpha feature is disabled"), w, req)
 			return
 		}
 
@@ -60,6 +63,12 @@ func DeleteResource(r rest.GracefulDeleter, allowsOptions bool, scope RequestSco
 		ctx = request.WithNamespace(ctx, namespace)
 		ae := request.AuditEventFrom(ctx)
 		admit = admission.WithAudit(admit, ae)
+
+		outputMediaType, _, err := negotiation.NegotiateOutputMediaType(req, scope.Serializer, &scope)
+		if err != nil {
+			scope.err(err, w, req)
+			return
+		}
 
 		options := &metav1.DeleteOptions{}
 		if allowsOptions {
@@ -108,7 +117,7 @@ func DeleteResource(r rest.GracefulDeleter, allowsOptions bool, scope RequestSco
 		trace.Step("About to check admission control")
 		if admit != nil && admit.Handles(admission.Delete) {
 			userInfo, _ := request.UserFrom(ctx)
-			attrs := admission.NewAttributesRecord(nil, nil, scope.Kind, namespace, name, scope.Resource, scope.Subresource, admission.Delete, userInfo)
+			attrs := admission.NewAttributesRecord(nil, nil, scope.Kind, namespace, name, scope.Resource, scope.Subresource, admission.Delete, dryrun.IsDryRun(options.DryRun), userInfo)
 			if mutatingAdmission, ok := admit.(admission.MutationInterface); ok {
 				if err := mutatingAdmission.Admit(attrs); err != nil {
 					scope.err(err, w, req)
@@ -157,30 +166,21 @@ func DeleteResource(r rest.GracefulDeleter, allowsOptions bool, scope RequestSco
 					Kind: scope.Kind.Kind,
 				},
 			}
-		} else {
-			// when a non-status response is returned, set the self link
-			requestInfo, ok := request.RequestInfoFrom(ctx)
-			if !ok {
-				scope.err(fmt.Errorf("missing requestInfo"), w, req)
-				return
-			}
-			if _, ok := result.(*metav1.Status); !ok {
-				if err := setSelfLink(result, requestInfo, scope.Namer); err != nil {
-					scope.err(err, w, req)
-					return
-				}
-			}
 		}
 
-		transformResponseObject(ctx, scope, req, w, status, result)
+		scope.Trace = trace
+		transformResponseObject(ctx, scope, req, w, status, outputMediaType, result)
 	}
 }
 
 // DeleteCollection returns a function that will handle a collection deletion
 func DeleteCollection(r rest.CollectionDeleter, checkBody bool, scope RequestScope, admit admission.Interface) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if isDryRun(req.URL) {
-			scope.err(errors.NewBadRequest("dryRun is not supported yet"), w, req)
+		trace := utiltrace.New("Delete " + req.URL.Path)
+		defer trace.LogIfLong(500 * time.Millisecond)
+
+		if isDryRun(req.URL) && !utilfeature.DefaultFeatureGate.Enabled(features.DryRun) {
+			scope.err(errors.NewBadRequest("the dryRun alpha feature is disabled"), w, req)
 			return
 		}
 
@@ -196,26 +196,11 @@ func DeleteCollection(r rest.CollectionDeleter, checkBody bool, scope RequestSco
 		ctx := req.Context()
 		ctx = request.WithNamespace(ctx, namespace)
 		ae := request.AuditEventFrom(ctx)
-		admit = admission.WithAudit(admit, ae)
 
-		if admit != nil && admit.Handles(admission.Delete) {
-			userInfo, _ := request.UserFrom(ctx)
-			attrs := admission.NewAttributesRecord(nil, nil, scope.Kind, namespace, "", scope.Resource, scope.Subresource, admission.Delete, userInfo)
-			if mutatingAdmission, ok := admit.(admission.MutationInterface); ok {
-				err = mutatingAdmission.Admit(attrs)
-				if err != nil {
-					scope.err(err, w, req)
-					return
-				}
-			}
-
-			if validatingAdmission, ok := admit.(admission.ValidationInterface); ok {
-				err = validatingAdmission.Validate(attrs)
-				if err != nil {
-					scope.err(err, w, req)
-					return
-				}
-			}
+		outputMediaType, _, err := negotiation.NegotiateOutputMediaType(req, scope.Serializer, &scope)
+		if err != nil {
+			scope.err(err, w, req)
+			return
 		}
 
 		listOptions := metainternalversion.ListOptions{}
@@ -279,6 +264,27 @@ func DeleteCollection(r rest.CollectionDeleter, checkBody bool, scope RequestSco
 			return
 		}
 
+		admit = admission.WithAudit(admit, ae)
+		if admit != nil && admit.Handles(admission.Delete) {
+			userInfo, _ := request.UserFrom(ctx)
+			attrs := admission.NewAttributesRecord(nil, nil, scope.Kind, namespace, "", scope.Resource, scope.Subresource, admission.Delete, dryrun.IsDryRun(options.DryRun), userInfo)
+			if mutatingAdmission, ok := admit.(admission.MutationInterface); ok {
+				err = mutatingAdmission.Admit(attrs)
+				if err != nil {
+					scope.err(err, w, req)
+					return
+				}
+			}
+
+			if validatingAdmission, ok := admit.(admission.ValidationInterface); ok {
+				err = validatingAdmission.Validate(attrs)
+				if err != nil {
+					scope.err(err, w, req)
+					return
+				}
+			}
+		}
+
 		result, err := finishRequest(timeout, func() (runtime.Object, error) {
 			return r.DeleteCollection(ctx, options, &listOptions)
 		})
@@ -297,16 +303,9 @@ func DeleteCollection(r rest.CollectionDeleter, checkBody bool, scope RequestSco
 					Kind: scope.Kind.Kind,
 				},
 			}
-		} else {
-			// when a non-status response is returned, set the self link
-			if _, ok := result.(*metav1.Status); !ok {
-				if _, err := setListSelfLink(result, ctx, req, scope.Namer); err != nil {
-					scope.err(err, w, req)
-					return
-				}
-			}
 		}
 
-		transformResponseObject(ctx, scope, req, w, http.StatusOK, result)
+		scope.Trace = trace
+		transformResponseObject(ctx, scope, req, w, http.StatusOK, outputMediaType, result)
 	}
 }

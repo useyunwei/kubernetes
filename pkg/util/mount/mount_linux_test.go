@@ -32,7 +32,7 @@ import (
 
 	"k8s.io/utils/exec"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 )
 
 func TestReadProcMountsFrom(t *testing.T) {
@@ -109,6 +109,10 @@ func TestGetMountRefs(t *testing.T) {
 				"/var/lib/kubelet/pods/some-pod/volumes/kubernetes.io~gce-pd/gce-pd2-in-pod2",
 				"/var/lib/kubelet/plugins/kubernetes.io/gce-pd/mounts/gce-pd2",
 			},
+		},
+		{
+			"/var/fake/directory/that/doesnt/exist",
+			[]string{},
 		},
 	}
 
@@ -413,7 +417,7 @@ func TestPathWithinBase(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		if pathWithinBase(test.fullPath, test.basePath) != test.expected {
+		if PathWithinBase(test.fullPath, test.basePath) != test.expected {
 			t.Errorf("test %q failed: expected %v", test.name, test.expected)
 		}
 
@@ -630,7 +634,7 @@ func TestSafeMakeDir(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		glog.V(4).Infof("test %q", test.name)
+		klog.V(4).Infof("test %q", test.name)
 		base, err := ioutil.TempDir("", "safe-make-dir-"+test.name+"-")
 		if err != nil {
 			t.Fatalf(err.Error())
@@ -642,7 +646,7 @@ func TestSafeMakeDir(t *testing.T) {
 			t.Errorf("test %q: %s", test.name, err)
 		}
 		if err != nil {
-			glog.Infof("got error: %s", err)
+			klog.Infof("got error: %s", err)
 		}
 		if err == nil && test.expectError {
 			t.Errorf("test %q: expected error, got none", test.name)
@@ -660,44 +664,6 @@ func TestSafeMakeDir(t *testing.T) {
 
 		os.RemoveAll(base)
 	}
-}
-
-func validateDirEmpty(dir string) error {
-	files, err := ioutil.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-
-	if len(files) != 0 {
-		return fmt.Errorf("Directory %q is not empty", dir)
-	}
-	return nil
-}
-
-func validateDirExists(dir string) error {
-	_, err := ioutil.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func validateDirNotExists(dir string) error {
-	_, err := ioutil.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return fmt.Errorf("dir %q still exists", dir)
-}
-
-func validateFileExists(file string) error {
-	if _, err := os.Stat(file); err != nil {
-		return err
-	}
-	return nil
 }
 
 func TestRemoveEmptyDirs(t *testing.T) {
@@ -788,7 +754,7 @@ func TestRemoveEmptyDirs(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		glog.V(4).Infof("test %q", test.name)
+		klog.V(4).Infof("test %q", test.name)
 		base, err := ioutil.TempDir("", "remove-empty-dirs-"+test.name+"-")
 		if err != nil {
 			t.Fatalf(err.Error())
@@ -959,7 +925,7 @@ func TestCleanSubPaths(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		glog.V(4).Infof("test %q", test.name)
+		klog.V(4).Infof("test %q", test.name)
 		base, err := ioutil.TempDir("", "clean-subpaths-"+test.name+"-")
 		if err != nil {
 			t.Fatalf(err.Error())
@@ -1215,7 +1181,7 @@ func TestBindSubPath(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		glog.V(4).Infof("test %q", test.name)
+		klog.V(4).Infof("test %q", test.name)
 		base, err := ioutil.TempDir("", "bind-subpath-"+test.name+"-")
 		if err != nil {
 			t.Fatalf(err.Error())
@@ -1647,7 +1613,7 @@ func TestSafeOpen(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		glog.V(4).Infof("test %q", test.name)
+		klog.V(4).Infof("test %q", test.name)
 		base, err := ioutil.TempDir("", "safe-open-"+test.name+"-")
 		if err != nil {
 			t.Fatalf(err.Error())
@@ -1660,7 +1626,7 @@ func TestSafeOpen(t *testing.T) {
 			t.Errorf("test %q: %s", test.name, err)
 		}
 		if err != nil {
-			glog.Infof("got error: %s", err)
+			klog.Infof("got error: %s", err)
 		}
 		if err == nil && test.expectError {
 			t.Errorf("test %q: expected error, got none", test.name)
@@ -1794,7 +1760,7 @@ func TestFindExistingPrefix(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		glog.V(4).Infof("test %q", test.name)
+		klog.V(4).Infof("test %q", test.name)
 		base, err := ioutil.TempDir("", "find-prefix-"+test.name+"-")
 		if err != nil {
 			t.Fatalf(err.Error())
@@ -1806,7 +1772,7 @@ func TestFindExistingPrefix(t *testing.T) {
 			t.Errorf("test %q: %s", test.name, err)
 		}
 		if err != nil {
-			glog.Infof("got error: %s", err)
+			klog.Infof("got error: %s", err)
 		}
 		if err == nil && test.expectError {
 			t.Errorf("test %q: expected error, got none", test.name)

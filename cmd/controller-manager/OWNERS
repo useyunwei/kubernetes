@@ -1,6 +1,7 @@
 approvers:
 - deads2k
 - cheftako
+- stewart-yu
 - sttts
 reviewers:
 - caesarxuchao
@@ -10,3 +11,5 @@ reviewers:
 - liggitt
 - sttts
 - stewart-yu
+labels:
+- sig/api-machinery

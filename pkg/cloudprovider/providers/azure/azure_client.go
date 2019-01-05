@@ -22,12 +22,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-04-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2017-09-01/network"
-	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2017-10-01/storage"
+	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2018-07-01/storage"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/adal"
-	"github.com/golang/glog"
+	"k8s.io/klog"
 
 	"k8s.io/client-go/util/flowcontrol"
 )
@@ -131,6 +131,11 @@ type DisksClient interface {
 	Get(ctx context.Context, resourceGroupName string, diskName string) (result compute.Disk, err error)
 }
 
+// VirtualMachineSizesClient defines needed functions for azure compute.VirtualMachineSizesClient
+type VirtualMachineSizesClient interface {
+	List(ctx context.Context, location string) (result compute.VirtualMachineSizeListResult, err error)
+}
+
 // azClientConfig contains all essential information to create an Azure client.
 type azClientConfig struct {
 	subscriptionID          string
@@ -140,6 +145,10 @@ type azClientConfig struct {
 	//Details: https://docs.microsoft.com/en-us/azure/azure-resource-manager/resource-manager-request-limits
 	rateLimiterReader flowcontrol.RateLimiter
 	rateLimiterWriter flowcontrol.RateLimiter
+
+	CloudProviderBackoffRetries    int
+	CloudProviderBackoffDuration   int
+	ShouldOmitCloudProviderBackoff bool
 }
 
 // azVirtualMachinesClient implements VirtualMachinesClient.
@@ -158,6 +167,10 @@ func newAzVirtualMachinesClient(config *azClientConfig) *azVirtualMachinesClient
 	virtualMachinesClient.BaseURI = config.resourceManagerEndpoint
 	virtualMachinesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	virtualMachinesClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		virtualMachinesClient.RetryAttempts = config.CloudProviderBackoffRetries
+		virtualMachinesClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&virtualMachinesClient.Client)
 
 	return &azVirtualMachinesClient{
@@ -174,9 +187,9 @@ func (az *azVirtualMachinesClient) CreateOrUpdate(ctx context.Context, resourceG
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachinesClient.CreateOrUpdate(%q, %q): start", resourceGroupName, VMName)
+	klog.V(10).Infof("azVirtualMachinesClient.CreateOrUpdate(%q, %q): start", resourceGroupName, VMName)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachinesClient.CreateOrUpdate(%q, %q): end", resourceGroupName, VMName)
+		klog.V(10).Infof("azVirtualMachinesClient.CreateOrUpdate(%q, %q): end", resourceGroupName, VMName)
 	}()
 
 	mc := newMetricContext("vm", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -185,7 +198,7 @@ func (az *azVirtualMachinesClient) CreateOrUpdate(ctx context.Context, resourceG
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -196,9 +209,9 @@ func (az *azVirtualMachinesClient) Get(ctx context.Context, resourceGroupName st
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachinesClient.Get(%q, %q): start", resourceGroupName, VMName)
+	klog.V(10).Infof("azVirtualMachinesClient.Get(%q, %q): start", resourceGroupName, VMName)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachinesClient.Get(%q, %q): end", resourceGroupName, VMName)
+		klog.V(10).Infof("azVirtualMachinesClient.Get(%q, %q): end", resourceGroupName, VMName)
 	}()
 
 	mc := newMetricContext("vm", "get", resourceGroupName, az.client.SubscriptionID)
@@ -213,9 +226,9 @@ func (az *azVirtualMachinesClient) List(ctx context.Context, resourceGroupName s
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachinesClient.List(%q): start", resourceGroupName)
+	klog.V(10).Infof("azVirtualMachinesClient.List(%q): start", resourceGroupName)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachinesClient.List(%q): end", resourceGroupName)
+		klog.V(10).Infof("azVirtualMachinesClient.List(%q): end", resourceGroupName)
 	}()
 
 	mc := newMetricContext("vm", "list", resourceGroupName, az.client.SubscriptionID)
@@ -249,6 +262,10 @@ func newAzInterfacesClient(config *azClientConfig) *azInterfacesClient {
 	interfacesClient.BaseURI = config.resourceManagerEndpoint
 	interfacesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	interfacesClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		interfacesClient.RetryAttempts = config.CloudProviderBackoffRetries
+		interfacesClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&interfacesClient.Client)
 
 	return &azInterfacesClient{
@@ -265,9 +282,9 @@ func (az *azInterfacesClient) CreateOrUpdate(ctx context.Context, resourceGroupN
 		return
 	}
 
-	glog.V(10).Infof("azInterfacesClient.CreateOrUpdate(%q,%q): start", resourceGroupName, networkInterfaceName)
+	klog.V(10).Infof("azInterfacesClient.CreateOrUpdate(%q,%q): start", resourceGroupName, networkInterfaceName)
 	defer func() {
-		glog.V(10).Infof("azInterfacesClient.CreateOrUpdate(%q,%q): end", resourceGroupName, networkInterfaceName)
+		klog.V(10).Infof("azInterfacesClient.CreateOrUpdate(%q,%q): end", resourceGroupName, networkInterfaceName)
 	}()
 
 	mc := newMetricContext("interfaces", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -277,7 +294,7 @@ func (az *azInterfacesClient) CreateOrUpdate(ctx context.Context, resourceGroupN
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -288,9 +305,9 @@ func (az *azInterfacesClient) Get(ctx context.Context, resourceGroupName string,
 		return
 	}
 
-	glog.V(10).Infof("azInterfacesClient.Get(%q,%q): start", resourceGroupName, networkInterfaceName)
+	klog.V(10).Infof("azInterfacesClient.Get(%q,%q): start", resourceGroupName, networkInterfaceName)
 	defer func() {
-		glog.V(10).Infof("azInterfacesClient.Get(%q,%q): end", resourceGroupName, networkInterfaceName)
+		klog.V(10).Infof("azInterfacesClient.Get(%q,%q): end", resourceGroupName, networkInterfaceName)
 	}()
 
 	mc := newMetricContext("interfaces", "get", resourceGroupName, az.client.SubscriptionID)
@@ -305,9 +322,9 @@ func (az *azInterfacesClient) GetVirtualMachineScaleSetNetworkInterface(ctx cont
 		return
 	}
 
-	glog.V(10).Infof("azInterfacesClient.GetVirtualMachineScaleSetNetworkInterface(%q,%q,%q,%q): start", resourceGroupName, virtualMachineScaleSetName, virtualmachineIndex, networkInterfaceName)
+	klog.V(10).Infof("azInterfacesClient.GetVirtualMachineScaleSetNetworkInterface(%q,%q,%q,%q): start", resourceGroupName, virtualMachineScaleSetName, virtualmachineIndex, networkInterfaceName)
 	defer func() {
-		glog.V(10).Infof("azInterfacesClient.GetVirtualMachineScaleSetNetworkInterface(%q,%q,%q,%q): end", resourceGroupName, virtualMachineScaleSetName, virtualmachineIndex, networkInterfaceName)
+		klog.V(10).Infof("azInterfacesClient.GetVirtualMachineScaleSetNetworkInterface(%q,%q,%q,%q): end", resourceGroupName, virtualMachineScaleSetName, virtualmachineIndex, networkInterfaceName)
 	}()
 
 	mc := newMetricContext("interfaces", "get_vmss_ni", resourceGroupName, az.client.SubscriptionID)
@@ -328,6 +345,10 @@ func newAzLoadBalancersClient(config *azClientConfig) *azLoadBalancersClient {
 	loadBalancerClient.BaseURI = config.resourceManagerEndpoint
 	loadBalancerClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	loadBalancerClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		loadBalancerClient.RetryAttempts = config.CloudProviderBackoffRetries
+		loadBalancerClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&loadBalancerClient.Client)
 
 	return &azLoadBalancersClient{
@@ -344,9 +365,9 @@ func (az *azLoadBalancersClient) CreateOrUpdate(ctx context.Context, resourceGro
 		return nil, err
 	}
 
-	glog.V(10).Infof("azLoadBalancersClient.CreateOrUpdate(%q,%q): start", resourceGroupName, loadBalancerName)
+	klog.V(10).Infof("azLoadBalancersClient.CreateOrUpdate(%q,%q): start", resourceGroupName, loadBalancerName)
 	defer func() {
-		glog.V(10).Infof("azLoadBalancersClient.CreateOrUpdate(%q,%q): end", resourceGroupName, loadBalancerName)
+		klog.V(10).Infof("azLoadBalancersClient.CreateOrUpdate(%q,%q): end", resourceGroupName, loadBalancerName)
 	}()
 
 	mc := newMetricContext("load_balancers", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -356,7 +377,7 @@ func (az *azLoadBalancersClient) CreateOrUpdate(ctx context.Context, resourceGro
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -368,9 +389,9 @@ func (az *azLoadBalancersClient) Delete(ctx context.Context, resourceGroupName s
 		return nil, err
 	}
 
-	glog.V(10).Infof("azLoadBalancersClient.Delete(%q,%q): start", resourceGroupName, loadBalancerName)
+	klog.V(10).Infof("azLoadBalancersClient.Delete(%q,%q): start", resourceGroupName, loadBalancerName)
 	defer func() {
-		glog.V(10).Infof("azLoadBalancersClient.Delete(%q,%q): end", resourceGroupName, loadBalancerName)
+		klog.V(10).Infof("azLoadBalancersClient.Delete(%q,%q): end", resourceGroupName, loadBalancerName)
 	}()
 
 	mc := newMetricContext("load_balancers", "delete", resourceGroupName, az.client.SubscriptionID)
@@ -380,7 +401,7 @@ func (az *azLoadBalancersClient) Delete(ctx context.Context, resourceGroupName s
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -391,9 +412,9 @@ func (az *azLoadBalancersClient) Get(ctx context.Context, resourceGroupName stri
 		return
 	}
 
-	glog.V(10).Infof("azLoadBalancersClient.Get(%q,%q): start", resourceGroupName, loadBalancerName)
+	klog.V(10).Infof("azLoadBalancersClient.Get(%q,%q): start", resourceGroupName, loadBalancerName)
 	defer func() {
-		glog.V(10).Infof("azLoadBalancersClient.Get(%q,%q): end", resourceGroupName, loadBalancerName)
+		klog.V(10).Infof("azLoadBalancersClient.Get(%q,%q): end", resourceGroupName, loadBalancerName)
 	}()
 
 	mc := newMetricContext("load_balancers", "get", resourceGroupName, az.client.SubscriptionID)
@@ -408,9 +429,9 @@ func (az *azLoadBalancersClient) List(ctx context.Context, resourceGroupName str
 		return nil, err
 	}
 
-	glog.V(10).Infof("azLoadBalancersClient.List(%q): start", resourceGroupName)
+	klog.V(10).Infof("azLoadBalancersClient.List(%q): start", resourceGroupName)
 	defer func() {
-		glog.V(10).Infof("azLoadBalancersClient.List(%q): end", resourceGroupName)
+		klog.V(10).Infof("azLoadBalancersClient.List(%q): end", resourceGroupName)
 	}()
 
 	mc := newMetricContext("load_balancers", "list", resourceGroupName, az.client.SubscriptionID)
@@ -444,6 +465,10 @@ func newAzPublicIPAddressesClient(config *azClientConfig) *azPublicIPAddressesCl
 	publicIPAddressClient.BaseURI = config.resourceManagerEndpoint
 	publicIPAddressClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	publicIPAddressClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		publicIPAddressClient.RetryAttempts = config.CloudProviderBackoffRetries
+		publicIPAddressClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&publicIPAddressClient.Client)
 
 	return &azPublicIPAddressesClient{
@@ -460,9 +485,9 @@ func (az *azPublicIPAddressesClient) CreateOrUpdate(ctx context.Context, resourc
 		return nil, err
 	}
 
-	glog.V(10).Infof("azPublicIPAddressesClient.CreateOrUpdate(%q,%q): start", resourceGroupName, publicIPAddressName)
+	klog.V(10).Infof("azPublicIPAddressesClient.CreateOrUpdate(%q,%q): start", resourceGroupName, publicIPAddressName)
 	defer func() {
-		glog.V(10).Infof("azPublicIPAddressesClient.CreateOrUpdate(%q,%q): end", resourceGroupName, publicIPAddressName)
+		klog.V(10).Infof("azPublicIPAddressesClient.CreateOrUpdate(%q,%q): end", resourceGroupName, publicIPAddressName)
 	}()
 
 	mc := newMetricContext("public_ip_addresses", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -472,7 +497,7 @@ func (az *azPublicIPAddressesClient) CreateOrUpdate(ctx context.Context, resourc
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -484,9 +509,9 @@ func (az *azPublicIPAddressesClient) Delete(ctx context.Context, resourceGroupNa
 		return nil, err
 	}
 
-	glog.V(10).Infof("azPublicIPAddressesClient.Delete(%q,%q): start", resourceGroupName, publicIPAddressName)
+	klog.V(10).Infof("azPublicIPAddressesClient.Delete(%q,%q): start", resourceGroupName, publicIPAddressName)
 	defer func() {
-		glog.V(10).Infof("azPublicIPAddressesClient.Delete(%q,%q): end", resourceGroupName, publicIPAddressName)
+		klog.V(10).Infof("azPublicIPAddressesClient.Delete(%q,%q): end", resourceGroupName, publicIPAddressName)
 	}()
 
 	mc := newMetricContext("public_ip_addresses", "delete", resourceGroupName, az.client.SubscriptionID)
@@ -496,7 +521,7 @@ func (az *azPublicIPAddressesClient) Delete(ctx context.Context, resourceGroupNa
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -507,9 +532,9 @@ func (az *azPublicIPAddressesClient) Get(ctx context.Context, resourceGroupName 
 		return
 	}
 
-	glog.V(10).Infof("azPublicIPAddressesClient.Get(%q,%q): start", resourceGroupName, publicIPAddressName)
+	klog.V(10).Infof("azPublicIPAddressesClient.Get(%q,%q): start", resourceGroupName, publicIPAddressName)
 	defer func() {
-		glog.V(10).Infof("azPublicIPAddressesClient.Get(%q,%q): end", resourceGroupName, publicIPAddressName)
+		klog.V(10).Infof("azPublicIPAddressesClient.Get(%q,%q): end", resourceGroupName, publicIPAddressName)
 	}()
 
 	mc := newMetricContext("public_ip_addresses", "get", resourceGroupName, az.client.SubscriptionID)
@@ -523,9 +548,9 @@ func (az *azPublicIPAddressesClient) List(ctx context.Context, resourceGroupName
 		return nil, createRateLimitErr(false, "PublicIPList")
 	}
 
-	glog.V(10).Infof("azPublicIPAddressesClient.List(%q): start", resourceGroupName)
+	klog.V(10).Infof("azPublicIPAddressesClient.List(%q): start", resourceGroupName)
 	defer func() {
-		glog.V(10).Infof("azPublicIPAddressesClient.List(%q): end", resourceGroupName)
+		klog.V(10).Infof("azPublicIPAddressesClient.List(%q): end", resourceGroupName)
 	}()
 
 	mc := newMetricContext("public_ip_addresses", "list", resourceGroupName, az.client.SubscriptionID)
@@ -559,6 +584,10 @@ func newAzSubnetsClient(config *azClientConfig) *azSubnetsClient {
 	subnetsClient.BaseURI = config.resourceManagerEndpoint
 	subnetsClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	subnetsClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		subnetsClient.RetryAttempts = config.CloudProviderBackoffRetries
+		subnetsClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&subnetsClient.Client)
 
 	return &azSubnetsClient{
@@ -575,9 +604,9 @@ func (az *azSubnetsClient) CreateOrUpdate(ctx context.Context, resourceGroupName
 		return
 	}
 
-	glog.V(10).Infof("azSubnetsClient.CreateOrUpdate(%q,%q,%q): start", resourceGroupName, virtualNetworkName, subnetName)
+	klog.V(10).Infof("azSubnetsClient.CreateOrUpdate(%q,%q,%q): start", resourceGroupName, virtualNetworkName, subnetName)
 	defer func() {
-		glog.V(10).Infof("azSubnetsClient.CreateOrUpdate(%q,%q,%q): end", resourceGroupName, virtualNetworkName, subnetName)
+		klog.V(10).Infof("azSubnetsClient.CreateOrUpdate(%q,%q,%q): end", resourceGroupName, virtualNetworkName, subnetName)
 	}()
 
 	mc := newMetricContext("subnets", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -587,7 +616,7 @@ func (az *azSubnetsClient) CreateOrUpdate(ctx context.Context, resourceGroupName
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -599,9 +628,9 @@ func (az *azSubnetsClient) Delete(ctx context.Context, resourceGroupName string,
 		return
 	}
 
-	glog.V(10).Infof("azSubnetsClient.Delete(%q,%q,%q): start", resourceGroupName, virtualNetworkName, subnetName)
+	klog.V(10).Infof("azSubnetsClient.Delete(%q,%q,%q): start", resourceGroupName, virtualNetworkName, subnetName)
 	defer func() {
-		glog.V(10).Infof("azSubnetsClient.Delete(%q,%q,%q): end", resourceGroupName, virtualNetworkName, subnetName)
+		klog.V(10).Infof("azSubnetsClient.Delete(%q,%q,%q): end", resourceGroupName, virtualNetworkName, subnetName)
 	}()
 
 	mc := newMetricContext("subnets", "delete", resourceGroupName, az.client.SubscriptionID)
@@ -611,7 +640,7 @@ func (az *azSubnetsClient) Delete(ctx context.Context, resourceGroupName string,
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -622,9 +651,9 @@ func (az *azSubnetsClient) Get(ctx context.Context, resourceGroupName string, vi
 		return
 	}
 
-	glog.V(10).Infof("azSubnetsClient.Get(%q,%q,%q): start", resourceGroupName, virtualNetworkName, subnetName)
+	klog.V(10).Infof("azSubnetsClient.Get(%q,%q,%q): start", resourceGroupName, virtualNetworkName, subnetName)
 	defer func() {
-		glog.V(10).Infof("azSubnetsClient.Get(%q,%q,%q): end", resourceGroupName, virtualNetworkName, subnetName)
+		klog.V(10).Infof("azSubnetsClient.Get(%q,%q,%q): end", resourceGroupName, virtualNetworkName, subnetName)
 	}()
 
 	mc := newMetricContext("subnets", "get", resourceGroupName, az.client.SubscriptionID)
@@ -638,9 +667,9 @@ func (az *azSubnetsClient) List(ctx context.Context, resourceGroupName string, v
 		return nil, createRateLimitErr(false, "SubnetList")
 	}
 
-	glog.V(10).Infof("azSubnetsClient.List(%q,%q): start", resourceGroupName, virtualNetworkName)
+	klog.V(10).Infof("azSubnetsClient.List(%q,%q): start", resourceGroupName, virtualNetworkName)
 	defer func() {
-		glog.V(10).Infof("azSubnetsClient.List(%q,%q): end", resourceGroupName, virtualNetworkName)
+		klog.V(10).Infof("azSubnetsClient.List(%q,%q): end", resourceGroupName, virtualNetworkName)
 	}()
 
 	mc := newMetricContext("subnets", "list", resourceGroupName, az.client.SubscriptionID)
@@ -674,6 +703,10 @@ func newAzSecurityGroupsClient(config *azClientConfig) *azSecurityGroupsClient {
 	securityGroupsClient.BaseURI = config.resourceManagerEndpoint
 	securityGroupsClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	securityGroupsClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		securityGroupsClient.RetryAttempts = config.CloudProviderBackoffRetries
+		securityGroupsClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&securityGroupsClient.Client)
 
 	return &azSecurityGroupsClient{
@@ -690,9 +723,9 @@ func (az *azSecurityGroupsClient) CreateOrUpdate(ctx context.Context, resourceGr
 		return
 	}
 
-	glog.V(10).Infof("azSecurityGroupsClient.CreateOrUpdate(%q,%q): start", resourceGroupName, networkSecurityGroupName)
+	klog.V(10).Infof("azSecurityGroupsClient.CreateOrUpdate(%q,%q): start", resourceGroupName, networkSecurityGroupName)
 	defer func() {
-		glog.V(10).Infof("azSecurityGroupsClient.CreateOrUpdate(%q,%q): end", resourceGroupName, networkSecurityGroupName)
+		klog.V(10).Infof("azSecurityGroupsClient.CreateOrUpdate(%q,%q): end", resourceGroupName, networkSecurityGroupName)
 	}()
 
 	mc := newMetricContext("security_groups", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -702,7 +735,7 @@ func (az *azSecurityGroupsClient) CreateOrUpdate(ctx context.Context, resourceGr
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -714,9 +747,9 @@ func (az *azSecurityGroupsClient) Delete(ctx context.Context, resourceGroupName 
 		return
 	}
 
-	glog.V(10).Infof("azSecurityGroupsClient.Delete(%q,%q): start", resourceGroupName, networkSecurityGroupName)
+	klog.V(10).Infof("azSecurityGroupsClient.Delete(%q,%q): start", resourceGroupName, networkSecurityGroupName)
 	defer func() {
-		glog.V(10).Infof("azSecurityGroupsClient.Delete(%q,%q): end", resourceGroupName, networkSecurityGroupName)
+		klog.V(10).Infof("azSecurityGroupsClient.Delete(%q,%q): end", resourceGroupName, networkSecurityGroupName)
 	}()
 
 	mc := newMetricContext("security_groups", "delete", resourceGroupName, az.client.SubscriptionID)
@@ -726,7 +759,7 @@ func (az *azSecurityGroupsClient) Delete(ctx context.Context, resourceGroupName 
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -737,9 +770,9 @@ func (az *azSecurityGroupsClient) Get(ctx context.Context, resourceGroupName str
 		return
 	}
 
-	glog.V(10).Infof("azSecurityGroupsClient.Get(%q,%q): start", resourceGroupName, networkSecurityGroupName)
+	klog.V(10).Infof("azSecurityGroupsClient.Get(%q,%q): start", resourceGroupName, networkSecurityGroupName)
 	defer func() {
-		glog.V(10).Infof("azSecurityGroupsClient.Get(%q,%q): end", resourceGroupName, networkSecurityGroupName)
+		klog.V(10).Infof("azSecurityGroupsClient.Get(%q,%q): end", resourceGroupName, networkSecurityGroupName)
 	}()
 
 	mc := newMetricContext("security_groups", "get", resourceGroupName, az.client.SubscriptionID)
@@ -753,9 +786,9 @@ func (az *azSecurityGroupsClient) List(ctx context.Context, resourceGroupName st
 		return nil, createRateLimitErr(false, "NSGList")
 	}
 
-	glog.V(10).Infof("azSecurityGroupsClient.List(%q): start", resourceGroupName)
+	klog.V(10).Infof("azSecurityGroupsClient.List(%q): start", resourceGroupName)
 	defer func() {
-		glog.V(10).Infof("azSecurityGroupsClient.List(%q): end", resourceGroupName)
+		klog.V(10).Infof("azSecurityGroupsClient.List(%q): end", resourceGroupName)
 	}()
 
 	mc := newMetricContext("security_groups", "list", resourceGroupName, az.client.SubscriptionID)
@@ -789,6 +822,10 @@ func newAzVirtualMachineScaleSetsClient(config *azClientConfig) *azVirtualMachin
 	virtualMachineScaleSetsClient.BaseURI = config.resourceManagerEndpoint
 	virtualMachineScaleSetsClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	virtualMachineScaleSetsClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		virtualMachineScaleSetsClient.RetryAttempts = config.CloudProviderBackoffRetries
+		virtualMachineScaleSetsClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&virtualMachineScaleSetsClient.Client)
 
 	return &azVirtualMachineScaleSetsClient{
@@ -805,9 +842,9 @@ func (az *azVirtualMachineScaleSetsClient) CreateOrUpdate(ctx context.Context, r
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachineScaleSetsClient.CreateOrUpdate(%q,%q): start", resourceGroupName, VMScaleSetName)
+	klog.V(10).Infof("azVirtualMachineScaleSetsClient.CreateOrUpdate(%q,%q): start", resourceGroupName, VMScaleSetName)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachineScaleSetsClient.CreateOrUpdate(%q,%q): end", resourceGroupName, VMScaleSetName)
+		klog.V(10).Infof("azVirtualMachineScaleSetsClient.CreateOrUpdate(%q,%q): end", resourceGroupName, VMScaleSetName)
 	}()
 
 	mc := newMetricContext("vmss", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -817,7 +854,7 @@ func (az *azVirtualMachineScaleSetsClient) CreateOrUpdate(ctx context.Context, r
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -828,9 +865,9 @@ func (az *azVirtualMachineScaleSetsClient) Get(ctx context.Context, resourceGrou
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachineScaleSetsClient.Get(%q,%q): start", resourceGroupName, VMScaleSetName)
+	klog.V(10).Infof("azVirtualMachineScaleSetsClient.Get(%q,%q): start", resourceGroupName, VMScaleSetName)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachineScaleSetsClient.Get(%q,%q): end", resourceGroupName, VMScaleSetName)
+		klog.V(10).Infof("azVirtualMachineScaleSetsClient.Get(%q,%q): end", resourceGroupName, VMScaleSetName)
 	}()
 
 	mc := newMetricContext("vmss", "get", resourceGroupName, az.client.SubscriptionID)
@@ -845,9 +882,9 @@ func (az *azVirtualMachineScaleSetsClient) List(ctx context.Context, resourceGro
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachineScaleSetsClient.List(%q): start", resourceGroupName)
+	klog.V(10).Infof("azVirtualMachineScaleSetsClient.List(%q): start", resourceGroupName)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachineScaleSetsClient.List(%q): end", resourceGroupName)
+		klog.V(10).Infof("azVirtualMachineScaleSetsClient.List(%q): end", resourceGroupName)
 	}()
 
 	mc := newMetricContext("vmss", "list", resourceGroupName, az.client.SubscriptionID)
@@ -876,9 +913,9 @@ func (az *azVirtualMachineScaleSetsClient) UpdateInstances(ctx context.Context, 
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachineScaleSetsClient.UpdateInstances(%q,%q,%v): start", resourceGroupName, VMScaleSetName, VMInstanceIDs)
+	klog.V(10).Infof("azVirtualMachineScaleSetsClient.UpdateInstances(%q,%q,%v): start", resourceGroupName, VMScaleSetName, VMInstanceIDs)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachineScaleSetsClient.UpdateInstances(%q,%q,%v): end", resourceGroupName, VMScaleSetName, VMInstanceIDs)
+		klog.V(10).Infof("azVirtualMachineScaleSetsClient.UpdateInstances(%q,%q,%v): end", resourceGroupName, VMScaleSetName, VMInstanceIDs)
 	}()
 
 	mc := newMetricContext("vmss", "update_instances", resourceGroupName, az.client.SubscriptionID)
@@ -888,7 +925,7 @@ func (az *azVirtualMachineScaleSetsClient) UpdateInstances(ctx context.Context, 
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -905,6 +942,10 @@ func newAzVirtualMachineScaleSetVMsClient(config *azClientConfig) *azVirtualMach
 	virtualMachineScaleSetVMsClient.BaseURI = config.resourceManagerEndpoint
 	virtualMachineScaleSetVMsClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	virtualMachineScaleSetVMsClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		virtualMachineScaleSetVMsClient.RetryAttempts = config.CloudProviderBackoffRetries
+		virtualMachineScaleSetVMsClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&virtualMachineScaleSetVMsClient.Client)
 
 	return &azVirtualMachineScaleSetVMsClient{
@@ -920,9 +961,9 @@ func (az *azVirtualMachineScaleSetVMsClient) Get(ctx context.Context, resourceGr
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Get(%q,%q,%q): start", resourceGroupName, VMScaleSetName, instanceID)
+	klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Get(%q,%q,%q): start", resourceGroupName, VMScaleSetName, instanceID)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Get(%q,%q,%q): end", resourceGroupName, VMScaleSetName, instanceID)
+		klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Get(%q,%q,%q): end", resourceGroupName, VMScaleSetName, instanceID)
 	}()
 
 	mc := newMetricContext("vmssvm", "get", resourceGroupName, az.client.SubscriptionID)
@@ -937,9 +978,9 @@ func (az *azVirtualMachineScaleSetVMsClient) GetInstanceView(ctx context.Context
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachineScaleSetVMsClient.GetInstanceView(%q,%q,%q): start", resourceGroupName, VMScaleSetName, instanceID)
+	klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.GetInstanceView(%q,%q,%q): start", resourceGroupName, VMScaleSetName, instanceID)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachineScaleSetVMsClient.GetInstanceView(%q,%q,%q): end", resourceGroupName, VMScaleSetName, instanceID)
+		klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.GetInstanceView(%q,%q,%q): end", resourceGroupName, VMScaleSetName, instanceID)
 	}()
 
 	mc := newMetricContext("vmssvm", "get_instance_view", resourceGroupName, az.client.SubscriptionID)
@@ -954,9 +995,9 @@ func (az *azVirtualMachineScaleSetVMsClient) List(ctx context.Context, resourceG
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachineScaleSetVMsClient.List(%q,%q,%q): start", resourceGroupName, virtualMachineScaleSetName, filter)
+	klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.List(%q,%q,%q): start", resourceGroupName, virtualMachineScaleSetName, filter)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachineScaleSetVMsClient.List(%q,%q,%q): end", resourceGroupName, virtualMachineScaleSetName, filter)
+		klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.List(%q,%q,%q): end", resourceGroupName, virtualMachineScaleSetName, filter)
 	}()
 
 	mc := newMetricContext("vmssvm", "list", resourceGroupName, az.client.SubscriptionID)
@@ -984,9 +1025,9 @@ func (az *azVirtualMachineScaleSetVMsClient) Update(ctx context.Context, resourc
 		return
 	}
 
-	glog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Update(%q,%q,%q): start", resourceGroupName, VMScaleSetName, instanceID)
+	klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Update(%q,%q,%q): start", resourceGroupName, VMScaleSetName, instanceID)
 	defer func() {
-		glog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Update(%q,%q,%q): end", resourceGroupName, VMScaleSetName, instanceID)
+		klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Update(%q,%q,%q): end", resourceGroupName, VMScaleSetName, instanceID)
 	}()
 
 	mc := newMetricContext("vmssvm", "update", resourceGroupName, az.client.SubscriptionID)
@@ -996,7 +1037,7 @@ func (az *azVirtualMachineScaleSetVMsClient) Update(ctx context.Context, resourc
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -1013,6 +1054,10 @@ func newAzRoutesClient(config *azClientConfig) *azRoutesClient {
 	routesClient.BaseURI = config.resourceManagerEndpoint
 	routesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	routesClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		routesClient.RetryAttempts = config.CloudProviderBackoffRetries
+		routesClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&routesClient.Client)
 
 	return &azRoutesClient{
@@ -1029,9 +1074,9 @@ func (az *azRoutesClient) CreateOrUpdate(ctx context.Context, resourceGroupName 
 		return
 	}
 
-	glog.V(10).Infof("azRoutesClient.CreateOrUpdate(%q,%q,%q): start", resourceGroupName, routeTableName, routeName)
+	klog.V(10).Infof("azRoutesClient.CreateOrUpdate(%q,%q,%q): start", resourceGroupName, routeTableName, routeName)
 	defer func() {
-		glog.V(10).Infof("azRoutesClient.CreateOrUpdate(%q,%q,%q): end", resourceGroupName, routeTableName, routeName)
+		klog.V(10).Infof("azRoutesClient.CreateOrUpdate(%q,%q,%q): end", resourceGroupName, routeTableName, routeName)
 	}()
 
 	mc := newMetricContext("routes", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -1041,7 +1086,7 @@ func (az *azRoutesClient) CreateOrUpdate(ctx context.Context, resourceGroupName 
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -1053,9 +1098,9 @@ func (az *azRoutesClient) Delete(ctx context.Context, resourceGroupName string, 
 		return
 	}
 
-	glog.V(10).Infof("azRoutesClient.Delete(%q,%q,%q): start", resourceGroupName, routeTableName, routeName)
+	klog.V(10).Infof("azRoutesClient.Delete(%q,%q,%q): start", resourceGroupName, routeTableName, routeName)
 	defer func() {
-		glog.V(10).Infof("azRoutesClient.Delete(%q,%q,%q): end", resourceGroupName, routeTableName, routeName)
+		klog.V(10).Infof("azRoutesClient.Delete(%q,%q,%q): end", resourceGroupName, routeTableName, routeName)
 	}()
 
 	mc := newMetricContext("routes", "delete", resourceGroupName, az.client.SubscriptionID)
@@ -1065,7 +1110,7 @@ func (az *azRoutesClient) Delete(ctx context.Context, resourceGroupName string, 
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -1082,6 +1127,10 @@ func newAzRouteTablesClient(config *azClientConfig) *azRouteTablesClient {
 	routeTablesClient.BaseURI = config.resourceManagerEndpoint
 	routeTablesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	routeTablesClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		routeTablesClient.RetryAttempts = config.CloudProviderBackoffRetries
+		routeTablesClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&routeTablesClient.Client)
 
 	return &azRouteTablesClient{
@@ -1098,9 +1147,9 @@ func (az *azRouteTablesClient) CreateOrUpdate(ctx context.Context, resourceGroup
 		return
 	}
 
-	glog.V(10).Infof("azRouteTablesClient.CreateOrUpdate(%q,%q): start", resourceGroupName, routeTableName)
+	klog.V(10).Infof("azRouteTablesClient.CreateOrUpdate(%q,%q): start", resourceGroupName, routeTableName)
 	defer func() {
-		glog.V(10).Infof("azRouteTablesClient.CreateOrUpdate(%q,%q): end", resourceGroupName, routeTableName)
+		klog.V(10).Infof("azRouteTablesClient.CreateOrUpdate(%q,%q): end", resourceGroupName, routeTableName)
 	}()
 
 	mc := newMetricContext("route_tables", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -1110,7 +1159,7 @@ func (az *azRouteTablesClient) CreateOrUpdate(ctx context.Context, resourceGroup
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -1121,9 +1170,9 @@ func (az *azRouteTablesClient) Get(ctx context.Context, resourceGroupName string
 		return
 	}
 
-	glog.V(10).Infof("azRouteTablesClient.Get(%q,%q): start", resourceGroupName, routeTableName)
+	klog.V(10).Infof("azRouteTablesClient.Get(%q,%q): start", resourceGroupName, routeTableName)
 	defer func() {
-		glog.V(10).Infof("azRouteTablesClient.Get(%q,%q): end", resourceGroupName, routeTableName)
+		klog.V(10).Infof("azRouteTablesClient.Get(%q,%q): end", resourceGroupName, routeTableName)
 	}()
 
 	mc := newMetricContext("route_tables", "get", resourceGroupName, az.client.SubscriptionID)
@@ -1143,6 +1192,10 @@ func newAzStorageAccountClient(config *azClientConfig) *azStorageAccountClient {
 	storageAccountClient := storage.NewAccountsClientWithBaseURI(config.resourceManagerEndpoint, config.subscriptionID)
 	storageAccountClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	storageAccountClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		storageAccountClient.RetryAttempts = config.CloudProviderBackoffRetries
+		storageAccountClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&storageAccountClient.Client)
 
 	return &azStorageAccountClient{
@@ -1159,9 +1212,9 @@ func (az *azStorageAccountClient) Create(ctx context.Context, resourceGroupName 
 		return
 	}
 
-	glog.V(10).Infof("azStorageAccountClient.Create(%q,%q): start", resourceGroupName, accountName)
+	klog.V(10).Infof("azStorageAccountClient.Create(%q,%q): start", resourceGroupName, accountName)
 	defer func() {
-		glog.V(10).Infof("azStorageAccountClient.Create(%q,%q): end", resourceGroupName, accountName)
+		klog.V(10).Infof("azStorageAccountClient.Create(%q,%q): end", resourceGroupName, accountName)
 	}()
 
 	mc := newMetricContext("storage_account", "create", resourceGroupName, az.client.SubscriptionID)
@@ -1170,7 +1223,7 @@ func (az *azStorageAccountClient) Create(ctx context.Context, resourceGroupName 
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -1181,9 +1234,9 @@ func (az *azStorageAccountClient) Delete(ctx context.Context, resourceGroupName 
 		return
 	}
 
-	glog.V(10).Infof("azStorageAccountClient.Delete(%q,%q): start", resourceGroupName, accountName)
+	klog.V(10).Infof("azStorageAccountClient.Delete(%q,%q): start", resourceGroupName, accountName)
 	defer func() {
-		glog.V(10).Infof("azStorageAccountClient.Delete(%q,%q): end", resourceGroupName, accountName)
+		klog.V(10).Infof("azStorageAccountClient.Delete(%q,%q): end", resourceGroupName, accountName)
 	}()
 
 	mc := newMetricContext("storage_account", "delete", resourceGroupName, az.client.SubscriptionID)
@@ -1198,9 +1251,9 @@ func (az *azStorageAccountClient) ListKeys(ctx context.Context, resourceGroupNam
 		return
 	}
 
-	glog.V(10).Infof("azStorageAccountClient.ListKeys(%q,%q): start", resourceGroupName, accountName)
+	klog.V(10).Infof("azStorageAccountClient.ListKeys(%q,%q): start", resourceGroupName, accountName)
 	defer func() {
-		glog.V(10).Infof("azStorageAccountClient.ListKeys(%q,%q): end", resourceGroupName, accountName)
+		klog.V(10).Infof("azStorageAccountClient.ListKeys(%q,%q): end", resourceGroupName, accountName)
 	}()
 
 	mc := newMetricContext("storage_account", "list_keys", resourceGroupName, az.client.SubscriptionID)
@@ -1215,9 +1268,9 @@ func (az *azStorageAccountClient) ListByResourceGroup(ctx context.Context, resou
 		return
 	}
 
-	glog.V(10).Infof("azStorageAccountClient.ListByResourceGroup(%q): start", resourceGroupName)
+	klog.V(10).Infof("azStorageAccountClient.ListByResourceGroup(%q): start", resourceGroupName)
 	defer func() {
-		glog.V(10).Infof("azStorageAccountClient.ListByResourceGroup(%q): end", resourceGroupName)
+		klog.V(10).Infof("azStorageAccountClient.ListByResourceGroup(%q): end", resourceGroupName)
 	}()
 
 	mc := newMetricContext("storage_account", "list_by_resource_group", resourceGroupName, az.client.SubscriptionID)
@@ -1232,9 +1285,9 @@ func (az *azStorageAccountClient) GetProperties(ctx context.Context, resourceGro
 		return
 	}
 
-	glog.V(10).Infof("azStorageAccountClient.GetProperties(%q,%q): start", resourceGroupName, accountName)
+	klog.V(10).Infof("azStorageAccountClient.GetProperties(%q,%q): start", resourceGroupName, accountName)
 	defer func() {
-		glog.V(10).Infof("azStorageAccountClient.GetProperties(%q,%q): end", resourceGroupName, accountName)
+		klog.V(10).Infof("azStorageAccountClient.GetProperties(%q,%q): end", resourceGroupName, accountName)
 	}()
 
 	mc := newMetricContext("storage_account", "get_properties", resourceGroupName, az.client.SubscriptionID)
@@ -1254,6 +1307,10 @@ func newAzDisksClient(config *azClientConfig) *azDisksClient {
 	disksClient := compute.NewDisksClientWithBaseURI(config.resourceManagerEndpoint, config.subscriptionID)
 	disksClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
 	disksClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		disksClient.RetryAttempts = config.CloudProviderBackoffRetries
+		disksClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
 	configureUserAgent(&disksClient.Client)
 
 	return &azDisksClient{
@@ -1270,9 +1327,9 @@ func (az *azDisksClient) CreateOrUpdate(ctx context.Context, resourceGroupName s
 		return
 	}
 
-	glog.V(10).Infof("azDisksClient.CreateOrUpdate(%q,%q): start", resourceGroupName, diskName)
+	klog.V(10).Infof("azDisksClient.CreateOrUpdate(%q,%q): start", resourceGroupName, diskName)
 	defer func() {
-		glog.V(10).Infof("azDisksClient.CreateOrUpdate(%q,%q): end", resourceGroupName, diskName)
+		klog.V(10).Infof("azDisksClient.CreateOrUpdate(%q,%q): end", resourceGroupName, diskName)
 	}()
 
 	mc := newMetricContext("disks", "create_or_update", resourceGroupName, az.client.SubscriptionID)
@@ -1282,7 +1339,7 @@ func (az *azDisksClient) CreateOrUpdate(ctx context.Context, resourceGroupName s
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -1294,9 +1351,9 @@ func (az *azDisksClient) Delete(ctx context.Context, resourceGroupName string, d
 		return
 	}
 
-	glog.V(10).Infof("azDisksClient.Delete(%q,%q): start", resourceGroupName, diskName)
+	klog.V(10).Infof("azDisksClient.Delete(%q,%q): start", resourceGroupName, diskName)
 	defer func() {
-		glog.V(10).Infof("azDisksClient.Delete(%q,%q): end", resourceGroupName, diskName)
+		klog.V(10).Infof("azDisksClient.Delete(%q,%q): end", resourceGroupName, diskName)
 	}()
 
 	mc := newMetricContext("disks", "delete", resourceGroupName, az.client.SubscriptionID)
@@ -1306,7 +1363,7 @@ func (az *azDisksClient) Delete(ctx context.Context, resourceGroupName string, d
 		return future.Response(), err
 	}
 
-	err = future.WaitForCompletion(ctx, az.client.Client)
+	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
 	return future.Response(), err
 }
@@ -1317,13 +1374,55 @@ func (az *azDisksClient) Get(ctx context.Context, resourceGroupName string, disk
 		return
 	}
 
-	glog.V(10).Infof("azDisksClient.Get(%q,%q): start", resourceGroupName, diskName)
+	klog.V(10).Infof("azDisksClient.Get(%q,%q): start", resourceGroupName, diskName)
 	defer func() {
-		glog.V(10).Infof("azDisksClient.Get(%q,%q): end", resourceGroupName, diskName)
+		klog.V(10).Infof("azDisksClient.Get(%q,%q): end", resourceGroupName, diskName)
 	}()
 
 	mc := newMetricContext("disks", "get", resourceGroupName, az.client.SubscriptionID)
 	result, err = az.client.Get(ctx, resourceGroupName, diskName)
+	mc.Observe(err)
+	return
+}
+
+// azVirtualMachineSizesClient implements VirtualMachineSizesClient.
+type azVirtualMachineSizesClient struct {
+	client            compute.VirtualMachineSizesClient
+	rateLimiterReader flowcontrol.RateLimiter
+	rateLimiterWriter flowcontrol.RateLimiter
+}
+
+func newAzVirtualMachineSizesClient(config *azClientConfig) *azVirtualMachineSizesClient {
+	VirtualMachineSizesClient := compute.NewVirtualMachineSizesClient(config.subscriptionID)
+	VirtualMachineSizesClient.BaseURI = config.resourceManagerEndpoint
+	VirtualMachineSizesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+	VirtualMachineSizesClient.PollingDelay = 5 * time.Second
+	if config.ShouldOmitCloudProviderBackoff {
+		VirtualMachineSizesClient.RetryAttempts = config.CloudProviderBackoffRetries
+		VirtualMachineSizesClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
+	}
+	configureUserAgent(&VirtualMachineSizesClient.Client)
+
+	return &azVirtualMachineSizesClient{
+		rateLimiterReader: config.rateLimiterReader,
+		rateLimiterWriter: config.rateLimiterWriter,
+		client:            VirtualMachineSizesClient,
+	}
+}
+
+func (az *azVirtualMachineSizesClient) List(ctx context.Context, location string) (result compute.VirtualMachineSizeListResult, err error) {
+	if !az.rateLimiterReader.TryAccept() {
+		err = createRateLimitErr(false, "VMSizesList")
+		return
+	}
+
+	klog.V(10).Infof("azVirtualMachineSizesClient.List(%q): start", location)
+	defer func() {
+		klog.V(10).Infof("azVirtualMachineSizesClient.List(%q): end", location)
+	}()
+
+	mc := newMetricContext("vmsizes", "list", "", az.client.SubscriptionID)
+	result, err = az.client.List(ctx, location)
 	mc.Observe(err)
 	return
 }

@@ -113,7 +113,7 @@ func HashControllerRevision(revision *apps.ControllerRevision, probe *int32) str
 
 // SortControllerRevisions sorts revisions by their Revision.
 func SortControllerRevisions(revisions []*apps.ControllerRevision) {
-	sort.Sort(byRevision(revisions))
+	sort.Stable(byRevision(revisions))
 }
 
 // EqualRevision returns true if lhs and rhs are either both nil, or both point to non-nil ControllerRevisions that
@@ -162,7 +162,14 @@ func (br byRevision) Len() int {
 	return len(br)
 }
 
+// Less breaks ties first by creation timestamp, then by name
 func (br byRevision) Less(i, j int) bool {
+	if br[i].Revision == br[j].Revision {
+		if br[j].CreationTimestamp.Equal(&br[i].CreationTimestamp) {
+			return br[i].Name < br[j].Name
+		}
+		return br[j].CreationTimestamp.After(br[i].CreationTimestamp.Time)
+	}
 	return br[i].Revision < br[j].Revision
 }
 
@@ -248,10 +255,18 @@ func (rh *realHistory) CreateControllerRevision(parent metav1.Object, revision *
 	// Continue to attempt to create the revision updating the name with a new hash on each iteration
 	for {
 		hash := HashControllerRevision(revision, collisionCount)
-		// Update the revisions name and labels
+		// Update the revisions name
 		clone.Name = ControllerRevisionName(parent.GetName(), hash)
-		created, err := rh.client.AppsV1().ControllerRevisions(parent.GetNamespace()).Create(clone)
+		ns := parent.GetNamespace()
+		created, err := rh.client.AppsV1().ControllerRevisions(ns).Create(clone)
 		if errors.IsAlreadyExists(err) {
+			exists, err := rh.client.AppsV1().ControllerRevisions(ns).Get(clone.Name, metav1.GetOptions{})
+			if err != nil {
+				return nil, err
+			}
+			if bytes.Equal(exists.Data.Raw, clone.Data.Raw) {
+				return exists, nil
+			}
 			*collisionCount++
 			continue
 		}
